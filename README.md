@@ -280,14 +280,7 @@ If you use/extend this pipeline, please cite:
 
 ## Contact
 
-Maintained by: **Abhyuday Parihar**
-(Include your email / LinkedIn / GitHub here)
+By: **Abhyuday Parihar**
+CooperSurgicals
 
-```
-
-If you want, I can also:
-- create a **clean `config.yaml` + refactor your Snakefiles** to use it (so the repo runs anywhere, not just `/data/...` paths)
-- write a strong **`.gitignore`** for GWAS/NGS repos
-- add a **“Running on AWS”** section (S3 sync, EBS sizing, Spot instances, costs) in the README
-::contentReference[oaicite:0]{index=0}
 ```
