@@ -1,5 +1,6 @@
+# End-to-End GWAS Pipeline
 ```markdown
-# End-to-End GWAS Pipeline (WES/NGS → VCF → PLINK → PCA → Association → Plots)
+# WES/NGS → VCF → PLINK → PCA → Association → Plots
 
 A reproducible Snakemake workflow to run an end-to-end GWAS starting from **aligned BAMs** (or plug in your own alignment step) and producing:
 - **Joint-called + VQSR-recalibrated** variants (GATK4)
