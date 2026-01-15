@@ -1,0 +1,70 @@
+import os
+import pandas as pd
+
+# Read sample sheet and extract unique conditions and replicates
+sample_csv = pd.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+SAMPLES_DIR = "/data/samples"
+RESULTS_DIR = "/data/results_exome"
+REF_DIR = "/data/ref"
+ENV_DIR = "/home/ec2-user/environment"
+
+rule all:
+    input:
+        expand(os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.out")),
+        expand(os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.evec2"))
+
+rule create_test_par:
+    output:
+        os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.par")
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gwas/smartpca
+        echo 'genotypename: /data/results_exome/gwas/plink/pruned/snps_pruned.bed' > {output}
+        echo 'snpname: /data/results_exome/gwas/plink/pruned/snps_pruned.bim' >> {output}
+        echo 'indivname: /data/results_exome/gwas/plink/pruned/snps_pruned.fam' >> {output}
+        echo 'evecoutname: /data/results_exome/gwas/smartpca/test.evec' >> {output}
+        echo 'evaloutname: /data/results_exome/gwas/smartpca/test.eval' >> {output}
+        echo 'altnormstyle: NO' >> {output}
+        echo 'numoutevec: 10' >> {output}
+        echo 'numoutlieriter: 0' >> {output}
+        echo 'outliersigmathresh: 4' >> {output}
+        echo 'outlieroutname: /data/results_exome/gwas/smartpca/outliers.removed' >> {output}
+        """
+
+rule run_smartpca:
+    input:
+        param_file=os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.par")
+    output:
+        os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.out"),
+        os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.evec"),
+        os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.eval")
+        
+    shell:
+        """
+        smartpca -p {input.param_file} > {output[0]}
+        """
+
+rule extract_evec:
+    input:
+        evec=os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.evec")
+    output:
+        evec2=os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.evec2")
+    shell:
+        """
+        awk '{{print $0, substr($1,1,2)}}' {input.evec} > {output.evec2}
+        """
+    
+
+
+#Rscript --vanilla plot_pop.R /data/results_exome/gwas/smartpca/test.evec2 1 2 10 /home/ec2-user/environment/pca_plots
+#awk '{print $0, substr($1,1,2)}' /data/results_exome/gwas/smartpca/test.evec > /data/results_exome/gwas/smartpca/test.evec2
+#Rscript --vanilla plot_pcs.R /data/results_exome/gwas/smartpca/test.evec 1 2 10 /home/ec2-user/environment/pca_plots
+
+
+
+
+
+
+

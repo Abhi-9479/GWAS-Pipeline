@@ -1,0 +1,116 @@
+import os
+import pandas as pd
+
+# Read sample sheet and extract unique conditions and replicates
+sample_csv = pd.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+SAMPLES_DIR = "/data/samples"
+RESULTS_DIR = "/data/results_exome"
+REF_DIR = "/data/ref"
+ENV_DIR = "/home/ec2-user/environment"
+
+rule all:
+    input:
+        expand(os.path.join(RESULTS_DIR, "gwas","smartpca","covariate_log.txt")),
+        os.path.join(RESULTS_DIR, "gwas", "results_gwas", "logistadjPC1.assoc.logistic"),
+        os.path.join(ENV_DIR,"qq.PC10adj.jpeg"),
+        os.path.join(ENV_DIR,"manhattan.PC10adj.jpeg")
+
+
+
+# Define paths and parameters
+EVC2_FILE = "/data/results_exome/gwas/smartpca/test.evec2"
+COV_FILE = "/data/results_exome/gwas/smartpca/covariate_log.txt"
+NUM_PCS = 10  # Adjust based on the number of PCs you want to include
+
+rule create_covariate_file:
+    input:
+        evec2_file=EVC2_FILE
+    output:
+        covariate_file=COV_FILE
+        
+    shell:
+        """
+        # Remove lines starting with '#' and extract only relevant columns
+        awk 'BEGIN{{OFS="\\t"}} !/^#/ {{print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $13}}' {input.evec2_file} > temp_cov.txt
+        
+        # Extract columns and rename
+        sed -e '/^#/d' -e '1d' temp_cov.txt > temp_cov_2.txt
+        
+        #Split the Fid Iid
+        awk -F'[: ]' 'BEGIN {{OFS="\t"}} {{print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12}}' temp_cov_2.txt >temp_cov_3.txt
+        
+        #Setting the Header
+        awk 'BEGIN {{OFS="\t"; print "FID", "IID", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "pop"}} 
+     {{print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13}}' temp_cov_3.txt > temp_cov_4.txt
+     
+        #Factor for pop column
+        awk 'BEGIN {{
+    OFS="\t"
+    print "FID", "IID", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10", "pop"
+}}
+NR > 1 {{
+    if ($13 == "CA") pop = 1
+    else if ($13 == "EA") pop = 2
+    else if ($13 == "PA") pop = 3
+    else pop = 0  # for any unexpected values
+    print $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, pop
+}}' temp_cov_4.txt > /data/results_exome/gwas/smartpca/covariate_log.txt 
+        
+        #Tabular Arrangement
+        
+    
+        # Clean up temporary file
+        rm temp_cov.txt temp_cov_2.txt temp_cov_3.txt temp_cov_4.txt
+        """
+     
+     
+rule GWAS:
+    input:
+        bed=os.path.join(RESULTS_DIR, "gwas", "plink", "pruned", "snps_pruned.bed"),
+        cov=os.path.join(RESULTS_DIR, "gwas", "smartpca", "covariate_log.txt")
+    output:
+        log=os.path.join(RESULTS_DIR, "gwas", "results_gwas", "logistadjPC1.assoc.logistic")
+    params:
+        bfile=os.path.join(RESULTS_DIR, "gwas", "plink", "pruned", "snps_pruned"),
+        out=os.path.join(RESULTS_DIR, "gwas", "results_gwas", "logistadjPC1")
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gwas/results_gwas
+        plink --bfile {params.bfile} --covar {input.cov} --covar-name PC1,PC2,PC3,PC4,PC5,PC6,PC7,PC8,PC9,PC10 --hide-covar --adjust --logistic beta --ci .95 --out {params.out}
+        """
+
+rule filter_na:
+    input:
+        logassoc=os.path.join(RESULTS_DIR, "gwas", "results_gwas", "logistadjPC1.assoc.logistic")
+    output:
+        clean_logassoc=os.path.join(RESULTS_DIR, "gwas", "results_gwas", "logistadjPC1.assoc_2.logistic")
+    shell:
+        """
+        awk '!/NA/' {input.logassoc} > {output.clean_logassoc}
+        """
+
+rule qqplot:
+    input:
+        logassoc=os.path.join(RESULTS_DIR, "gwas", "results_gwas", "logistadjPC1.assoc_2.logistic")
+    output:
+        plot=os.path.join(ENV_DIR,"qq.PC10adj.jpeg")
+    shell:
+        """
+        Rscript --vanilla plot_qq.R {input.logassoc} PC10adj ADD
+        """
+
+
+rule manplot:
+    input:
+        logassoc=os.path.join(RESULTS_DIR, "gwas", "results_gwas", "logistadjPC1.assoc_2.logistic")
+    output:
+        plot=os.path.join(ENV_DIR,"manhattan.PC10adj.jpeg")
+    shell:
+        """
+        Rscript --vanilla plot_man.R {input.logassoc} PC10adj ADD
+        """
+        
+        
+    

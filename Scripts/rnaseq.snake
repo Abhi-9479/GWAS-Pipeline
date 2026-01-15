@@ -1,0 +1,49 @@
+# Snakefile
+
+import os
+
+# Set the path to the input FASTQ files
+SAMPLES = ["sample1", "sample2", "sample3", "sample4"]
+FASTQ_DIR = "path/to/fastq/files"
+
+# Set the path to the reference genome and annotation files
+GENOME_FASTA = "path/to/genome.fasta"
+GENOME_GTF = "path/to/genome.gtf"
+
+# Set the output directory
+OUTPUT_DIR = "path/to/output/directory"
+
+rule all:
+    input:
+        expand(os.path.join(OUTPUT_DIR, "{sample}", "counts.tsv"), sample=SAMPLES)
+
+rule star_align:
+    input:
+        fq1 = os.path.join(FASTQ_DIR, "{sample}_1.fastq.gz"),
+        fq2 = os.path.join(FASTQ_DIR, "{sample}_2.fastq.gz")
+    output:
+        bam = os.path.join(OUTPUT_DIR, "{sample}", "Aligned.sortedByCoord.out.bam")
+    params:
+        index_dir = "path/to/star/index"
+    conda:
+        "environment.yml"
+    shell:
+        """
+        STAR --genomeDir {params.index_dir} \
+             --readFilesIn {input.fq1} {input.fq2} \
+             --outFileNamePrefix {os.path.join(OUTPUT_DIR, "{wildcards.sample}", "Aligned")} \
+             --outSAMtype BAM SortedByCoordinate
+        """
+
+rule feature_counts:
+    input:
+        bam = rules.star_align.output.bam,
+        gtf = GENOME_GTF
+    output:
+        counts = os.path.join(OUTPUT_DIR, "{sample}", "counts.tsv")
+    conda:
+        "environment.yml"
+    shell:
+        """
+        featureCounts -a {input.gtf} -o {output.counts} {input.bam}
+        """

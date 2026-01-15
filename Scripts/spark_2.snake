@@ -1,0 +1,316 @@
+import os
+import glob
+import pandas as pd
+
+# Read sample sheet and extract unique trial_samples and replicates
+sample_csv = pd.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+
+SAMPLES_DIR = "/data/samples"
+RESULTS_DIR = "/data/results"
+REF_DIR = "/data/ref"
+ENV_DIR = "/home/ec2-user/environment"
+trial_samples=["HFKHKBGXL-ICM-COE-123-BSC",HFKHKBGXL-ICM-COE-24-BSC]
+
+# Rule all
+rule all:
+    input:
+        expand(RESULTS_DIR + "/gatk/bqsr/{sample}_recal_data.table", sample=trial_samples),
+        expand(RESULTS_DIR + "/gatk/bqsr/merged_recal_data.table", sample=trial_samples),
+        expand(RESULTS_DIR + "/gatk/bqsr/{sample}_recalibrated_reads.bam", sample=trial_samples),
+        expand(RESULTS_DIR + "/gatk/hc/{sample}.g.vcf.gz", sample=trial_samples),
+        expand(RESULTS_DIR + "/gatk/hc/final.vcf.gz"),
+        expand(RESULTS_DIR + "/gatk/vqsr/output.recalibrated_snps.vcf.gz"),
+        expand(RESULTS_DIR + "/gatk/vqsr/final.recalibrated.vcf.gz"),
+        expand(RESULTS_DIR + "/gatk/vqsr/analysis-ready-snps.vcf.gz"),
+        expand(RESULTS_DIR + "/gatk/vqsr/analysis-ready-indels.vcf.gz"),
+        expand(RESULTS_DIR + "/gatk/annotated/snps_annotated.vcf"),
+        expand(RESULTS_DIR + "/gatk/annotated/indels_annotated.vcf"),
+        expand(RESULTS_DIR + "/gwas/plink/snps/snps.bed"),
+        expand(RESULTS_DIR + "/gwas/plink/snps/snps.bim"),
+        expand(RESULTS_DIR + "/gwas/plink/snps/snps.fam"),
+        expand(RESULTS_DIR + "/gwas/plink/indels/indels.bed"),
+        expand(RESULTS_DIR + "/gwas/plink/indels/indels.bim"),
+        expand(RESULTS_DIR + "/gwas/plink/indels/indels.fam")
+
+rule mark_duplicates:
+    input:
+        os.path.join(RESULTS_DIR, 'bwa','sort',"{sample}_sorted.bam")
+    output:
+        dedup=os.path.join(RESULTS_DIR, "gatk", "dedup", "{sample}_sorted_dedup_reads.bam")
+    threads:
+        8
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gatk/dedup
+        gatk --java-options "-Djava.io.tmpdir=/data/temp " MarkDuplicatesSpark -I {input} -O {output.dedup} \
+        -- --spark-master local[{threads}] --conf spark.local.dir=/data/temp
+        """
+
+rule generate_recalibration_model:
+    input:
+        bam=os.path.join(RESULTS_DIR, "gatk", "dedup", "{sample}_sorted_dedup_reads.bam"),
+        dbsnp=os.path.join(REF_DIR, "Homo_sapiens_assembly38.dbsnp138.vcf"),
+        gold=os.path.join(REF_DIR, "Mills_and_1000G_gold_standard.indels.hg38.vcf.gz")
+    output:
+        recal_data=os.path.join(RESULTS_DIR, "gatk", "bqsr", "{sample}_recal_data.table")
+    params:
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta")
+    threads: 8
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gatk/bqsr
+        gatk \
+         BaseRecalibratorSpark \
+        -I {input.bam} \
+        -R {params.ref} \
+        --known-sites {input.dbsnp} \
+        --known-sites {input.gold} \
+        -O {output.recal_data} \
+        -- --spark-master local[{threads}] --conf spark.local.dir=/data/temp
+        """
+
+rule merge_recalibration_tables:
+    input:
+        expand(os.path.join(RESULTS_DIR, "gatk", "bqsr", "{sample}_recal_data.table"), sample=trial_samples)
+    output:
+        os.path.join(RESULTS_DIR, "gatk", "bqsr", "merged_recal_data.table")
+    params:
+        input_files=lambda wildcards, input: ' '.join(f'-I {file}' for file in input)
+    threads: 12  # Adjust this number as needed
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gatk/bqsr
+        gatk GatherBQSRReports \
+        {params.input_files} \
+        -O {output}
+        """
+
+rule apply_bqsr:
+    input:
+        bam=os.path.join(RESULTS_DIR, "gatk", "dedup", "{sample}_sorted_dedup_reads.bam"),
+        recal_data=os.path.join(RESULTS_DIR, "gatk", "bqsr", "merged_recal_data.table")
+    output:
+        recal_bam=os.path.join(RESULTS_DIR, "gatk", "bqsr", "{sample}_recalibrated_reads.bam")
+    params:
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta")
+    threads: 8  # Adjust this number as needed
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gatk/bqsr
+        gatk ApplyBQSRSpark \
+        -I {input.bam} \
+        -R {params.ref} \
+        --bqsr-recal-file {input.recal_data} \
+        -O {output.recal_bam} \
+        -- --spark-master local[{threads}] --conf spark.local.dir=/data/temp
+        
+        """
+
+rule haplotype_caller:
+    input:
+        bam=os.path.join(RESULTS_DIR, "gatk", "bqsr", "{sample}_recalibrated_reads.bam"),
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta")
+    output:
+        vcf= os.path.join(RESULTS_DIR, "gatk", "hc", "{sample}.g.vcf.gz")
+    threads: 5
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gatk/hc
+        gatk \
+        HaplotypeCaller \
+        -R {input.ref} \
+        -I {input.bam} \
+        -O {output.vcf} \
+        --dont-use-soft-clipped-bases \
+        -ERC GVCF \
+        --native-pair-hmm-threads 8
+        """
+
+rule combine_gvcfs:
+    input:
+        gvcfs=expand(os.path.join(RESULTS_DIR, "gatk", "hc", "{sample}.g.vcf.gz"), sample=trial_samples),
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta")
+    output:
+        combined_gvcf=os.path.join(RESULTS_DIR, "gatk", "hc", "combined.g.vcf.gz")
+    threads: 8  # Adjust this number as needed
+    run:
+        gvcf_files = ' '.join([f"-V {gvcf}" for gvcf in input.gvcfs])
+        shell(f"""
+            gatk CombineGVCFs \
+                -R {input.ref} \
+                {gvcf_files} \
+                -O {output.combined_gvcf}
+        """)
+
+rule genotype_gvcfs:
+    input:
+        combined_gvcf=os.path.join(RESULTS_DIR, "gatk", "hc", "combined.g.vcf.gz"),
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta")
+    output:
+        final_vcf=os.path.join(RESULTS_DIR, "gatk", "hc", "final.vcf.gz")
+    threads: 8  # Adjust this number as needed
+    shell:
+        """
+        gatk GenotypeGVCFs \
+            -R {input.ref} \
+            -V {input.combined_gvcf} \
+            -O {output.final_vcf}
+        """
+
+rule variant_recalibrator_snp:
+    input:
+        vcf=os.path.join(RESULTS_DIR, "gatk", "hc", "final.vcf.gz"),
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta"),
+        hapmap=os.path.join(REF_DIR, "hapmap_3.3.hg38.vcf.gz"),
+        omni=os.path.join(REF_DIR, "1000G_omni2.5.hg38.vcf.gz"),
+        dbsnp=os.path.join(REF_DIR, "Homo_sapiens_assembly38.dbsnp138.vcf")
+    output:
+        recal=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.snp.recal"),
+        tranches=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.snp.tranches")
+    threads: 8  # Adjust this number as needed
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gatk/vqsr
+        gatk VariantRecalibratorSpark \
+            -R {input.ref} \
+            -V {input.vcf} \
+            --resource:hapmap,known=false,training=true,truth=true,prior=15.0 {input.hapmap} \
+            --resource:omni,known=false,training=true,truth=true,prior=12.0 {input.omni} \
+            --resource:dbsnp,known=true,training=false,truth=false,prior=2.0 {input.dbsnp} \
+            -mode SNP \
+            -O {output.recal} \
+            --tranches-file {output.tranches} \
+            -- --spark-master local[{threads}] --conf spark.local.dir=/data/temp
+        """
+
+rule apply_vqsr_snp:
+    input:
+        vcf=os.path.join(RESULTS_DIR, "gatk", "hc", "final.vcf.gz"),
+        recal=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.snp.recal"),
+        tranches=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.snp.tranches"),
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta")
+    output:
+        recalibrated_vcf=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.recalibrated_snps.vcf.gz")
+    threads: 8  # Adjust this number as needed
+    shell:
+        """
+        gatk ApplyVQSRSpark \
+            -R {input.ref} \
+            -V {input.vcf} \
+            --recal-file {input.recal} \
+            --tranches-file {input.tranches} \
+            -mode SNP \
+            -O {output.recalibrated_vcf} \
+            -- --spark-master local[{threads}] --conf spark.local.dir=/data/temp
+        """
+
+rule variant_recalibrator_indel:
+    input:
+        vcf=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.recalibrated_snps.vcf.gz"),
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta"),
+        mills=os.path.join(REF_DIR, "Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"),
+        dbsnp=os.path.join(REF_DIR, "Homo_sapiens_assembly38.dbsnp138.vcf")
+    output:
+        recal=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.indel.recal"),
+        tranches=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.indel.tranches")
+    threads: 8  # Adjust this number as needed
+    shell:
+        """
+        gatk VariantRecalibratorSpark \
+            -R {input.ref} \
+            -V {input.vcf} \
+            --resource:mills,known=false,training=true,truth=true,prior=12.0 {input.mills} \
+            --resource:dbsnp,known=true,training=false,truth=false,prior=2.0 {input.dbsnp} \
+            -mode INDEL \
+            -O {output.recal} \
+            --tranches-file {output.tranches} \
+            -- --spark-master local[{threads}] --conf spark.local.dir=/data/temp
+        """
+
+rule apply_vqsr_indel:
+    input:
+        vcf=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.recalibrated_snps.vcf.gz"),
+        recal=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.indel.recal"),
+        tranches=os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.indel.tranches"),
+        ref=os.path.join(REF_DIR, "Homo_sapiens_assembly38.fasta")
+    output:
+        final_vcf=os.path.join(RESULTS_DIR, "gatk", "vqsr", "final.recalibrated.vcf.gz")
+    threads: 8  # Adjust this number as needed
+    shell:
+        """
+        gatk ApplyVQSR \
+            -R {input.ref} \
+            -V {input.vcf} \
+            --recal-file {input.recal} \
+            --tranches-file {input.tranches} \
+            -mode INDEL \
+            -O {output.final_vcf}
+        """
+
+rule split_variants:
+    input:
+        os.path.join(RESULTS_DIR, "gatk", "vqsr", "final.recalibrated.vcf.gz")
+    output:
+        snps=os.path.join(RESULTS_DIR, "gatk", "vqsr", "analysis-ready-snps.vcf.gz"),
+        indels=os.path.join(RESULTS_DIR, "gatk", "vqsr", "analysis-ready-indels.vcf.gz")
+    threads:
+        8
+    shell:
+        """
+        gatk SelectVariants \
+        -V {input} \
+        --select-type-to-include SNP \
+        -O {output.snps}
+
+        gatk  SelectVariants \
+        -V {input} \
+        --select-type-to-include INDEL \
+        -O {output.indels}
+        """
+
+rule annotate_variants:
+    input:
+        snps=os.path.join(RESULTS_DIR, "gatk", "vqsr", "analysis-ready-snps.vcf.gz"),
+        indels=os.path.join(RESULTS_DIR, "gatk", "vqsr", "analysis-ready-indels.vcf.gz")
+    output:
+        snps_annotated=os.path.join(RESULTS_DIR, "gatk", "annotated", "snps_annotated.vcf"),
+        indels_annotated=os.path.join(RESULTS_DIR, "gatk", "annotated", "indels_annotated.vcf")
+    threads:
+        8
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gatk/annotated
+        bcftools annotate --threads {threads} --annotations dbSNP.vcf.gz --output {output.snps_annotated} --output-type v {input.snps}
+        bcftools annotate --threads {threads} --annotations dbSNP.vcf.gz --output {output.indels_annotated} --output-type v {input.indels}
+        """
+
+rule plink_snps:
+    input:
+        os.path.join(RESULTS_DIR, "gatk", "annotated", "snps_annotated.vcf")
+    output:
+        bed=os.path.join(RESULTS_DIR, "gwas", "plink", "snps", "snps.bed"),
+        bim=os.path.join(RESULTS_DIR, "gwas", "plink", "snps", "snps.bim"),
+        fam=os.path.join(RESULTS_DIR, "gwas", "plink", "snps", "snps.fam")
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gwas/plink/snps
+        plink --vcf {input} --make-bed --out {RESULTS_DIR}/gwas/plink/snps/snps
+        """
+
+rule plink_indels:
+    input:
+        os.path.join(RESULTS_DIR, "gatk", "annotated", "indels_annotated.vcf")
+    output:
+        bed=os.path.join(RESULTS_DIR, "gwas", "plink", "indels", "indels.bed"),
+        bim=os.path.join(RESULTS_DIR, "gwas", "plink", "indels", "indels.bim"),
+        fam=os.path.join(RESULTS_DIR, "gwas", "plink", "indels", "indels.fam")
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/gwas/plink/indels
+        plink --vcf {input} --make-bed --out {RESULTS_DIR}/gwas/plink/indels/indels
+        """
+
+
+

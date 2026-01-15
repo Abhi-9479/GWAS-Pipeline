@@ -1,0 +1,66 @@
+import os
+import pandas as pd
+
+# Read sample sheet and extract unique conditions and replicates
+sample_csv = pd.read_csv('sample_sheet.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+SAMPLES_DIR = "/data/samples"
+RESULTS_DIR = "/data/results_exome"
+REF_DIR = "/data/ref"
+ENV_DIR = "/home/ec2-user/environment"
+
+rule all:
+    input:
+        expand(os.path.join(ENV_DIR,"plots", "PC{x}_vs_PC{y}.png"),x=[1,2],y=[2,3]),
+        expand(os.path.join(ENV_DIR,"plots", "test.evec2.PC.{x}.{y}.jpeg"),x=[1,2],y=[2,3])
+        
+
+
+rule plot_pcs:
+    input:
+        script=os.path.join(ENV_DIR, "plot_pcs.R"),
+        evec=os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.evec")
+    output:
+        plot=os.path.join(ENV_DIR,"plots","PC{x}_vs_PC{y}.png")
+    params:
+        total_pcs=10,  # Adjust this based on your data
+        outdir=os.path.join(ENV_DIR, "plots")
+    shell:
+        """
+        mkdir -p {ENV_DIR}/plots
+        Rscript --vanilla {input.script} \
+            {input.evec} \
+            {wildcards.x} \
+            {wildcards.y} \
+            {params.total_pcs} \
+            {output.plot}
+        """
+    
+rule plot_pop:
+    input:
+        evec2=os.path.join(RESULTS_DIR, "gwas", "smartpca", "test.evec2"),
+        script=os.path.join(ENV_DIR, "plot_pop.R")
+    output:
+        plot=os.path.join(ENV_DIR, "plots", "test.evec2.PC.{x}.{y}.jpeg")
+    params:
+        total_pcs=10,  # Adjust this based on your data
+        outdir=os.path.join(ENV_DIR, "plots")
+    shell:
+        """
+        mkdir -p {ENV_DIR}/plots
+        Rscript --vanilla {input.script} \
+            {input.evec2} \
+            {wildcards.x} \
+            {wildcards.y} \
+            {params.total_pcs} \
+            {params.outdir}
+        """
+
+#Rscript --vanilla plot_pop.R /data/results_exome/gwas/smartpca/test.evec2 1 2 10 /home/ec2-user/environment/pca_plots
+#awk '{print $0, substr($1,1,2)}' /data/results_exome/gwas/smartpca/test.evec > /data/results_exome/gwas/smartpca/test.evec2
+#Rscript --vanilla plot_pcs.R /data/results_exome/gwas/smartpca/test.evec 1 2 10 /home/ec2-user/environment/pca_plots
+
+
+#conda:
+#        "envs/r_env.yaml"

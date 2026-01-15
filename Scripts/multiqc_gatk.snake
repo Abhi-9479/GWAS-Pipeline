@@ -1,0 +1,71 @@
+import os
+import pandas as pd
+
+# Read sample sheet and extract unique CONDITIONS and replicates
+sample_csv = pd.read_csv('sample_sheet_e.csv', index_col='name')
+CONDITIONS = set(sample_csv['condition'].tolist())
+REPS = set(sample_csv['replicate'].tolist())
+SCATTER_COUNT = 20
+SAMPLES_DIR = "/data/samples"
+RESULTS_DIR = "/data/results_exome"
+REF_DIR = "/data/ref"
+ENV_DIR = "/home/ec2-user/environment"
+trial = [
+    '2223J2JNX-0601-03192019-37-2', '2223J2JNX-MIST402-0648-06132019-59',
+    '2223J2JNX-0601-03192019-37', '2223J2JNX-MIST402-0649-06262019-67',
+    '2223J2JNX-0614-03252019-70', '2223J2JNX-MIST402-0650-07052019-68',
+    '2223J2JNX-0621-03122019-53', '2223J2JNX-MIST402-0651-07032019-39',
+    '2223J2JNX-0630-03212019-42', '2223J2JNX-MIST402-0652-06242019-75',
+    '2223J2JNX-0635-03122019-54', '2223J2JNX-MIST402-0672-03232019-38',
+    '2223J2JNX-MIST403-1625-08152022-9'
+]
+
+# Rule all
+rule all:
+    input:
+        expand(os.path.join(RESULTS_DIR, "gatk", "bqsr", "{sample}_recal_data.table"), sample=CONDITIONS),
+        expand(os.path.join(RESULTS_DIR, "gatk", "bqsr", "merged_recal_data.table")),
+        expand(os.path.join(RESULTS_DIR, "gatk", "bqsr", "{sample}_recalibrated_reads.bam"), sample=CONDITIONS),
+        expand(os.path.join(RESULTS_DIR, "intervals")),
+        expand(os.path.join(RESULTS_DIR, "gatk", "hc", "{sample}.g.vcf.gz"), sample=CONDITIONS),
+        os.path.join(RESULTS_DIR, "gatk", "hc", "final.vcf.gz"),
+        os.path.join(RESULTS_DIR, "gatk", "vqsr", "output.recalibrated_snps.vcf.gz"),
+        os.path.join(RESULTS_DIR, "gatk", "vqsr", "final.recalibrated.vcf.gz"),
+        os.path.join(RESULTS_DIR, "gatk", "vqsr", "analysis-ready-snps.vcf.gz"),
+        os.path.join(RESULTS_DIR, "gatk", "vqsr", "analysis-ready-indels.vcf.gz"),
+        os.path.join(RESULTS_DIR, "gatk", "annotated", "snps_annotated.vcf"),
+        os.path.join(RESULTS_DIR, "gatk", "annotated", "indels_annotated.vcf"),
+        os.path.join(RESULTS_DIR, "gwas", "plink", "snps", "snps.bed"),
+        os.path.join(RESULTS_DIR, "gwas", "plink", "snps", "snps.bim"),
+        os.path.join(RESULTS_DIR, "gwas", "plink", "snps", "snps.fam"),
+        os.path.join(RESULTS_DIR, "gwas", "plink", "indels", "indels.bed"),
+        os.path.join(RESULTS_DIR, "gwas", "plink", "indels", "indels.bim"),
+        os.path.join(RESULTS_DIR, "gwas", "plink", "indels", "indels.fam"),
+        os.path.join(ENV_DIR, "multiqc_gatk")
+
+# Rule bcftools_stats
+rule bcftools_stats:
+    input:
+        vcf=os.path.join(RESULTS_DIR, "gatk", "vqsr", "final.recalibrated.vcf.gz")
+    output:
+        stats=os.path.join(RESULTS_DIR, "multiqc", "gatk", "recal_annotated_stats.txt")
+    threads: 4
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/bcftools
+        bcftools stats {input.vcf} > {output.stats}
+        """
+
+# MultiQC report rule
+rule multiqc_report:
+    input:
+        expand(os.path.join(RESULTS_DIR, "gatk", "bqsr"), sample=CONDITIONS),
+        expand(os.path.join(RESULTS_DIR, "multiqc", "gatk", "{sample}_dedup_metrics.txt"), sample=CONDITIONS),
+        os.path.join(RESULTS_DIR, "multiqc", "gatk", "snps_annotated_stats.txt")
+    output:
+        directory(os.path.join(ENV_DIR, "multiqc_gatk"))
+    shell:
+        """
+        mkdir -p {RESULTS_DIR}/multiqc
+        multiqc -o {output} {input}
+        """
